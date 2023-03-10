@@ -49,6 +49,7 @@ pub enum CommandEnum {
     AddKey(String),
     DeleteKey,
     Transfer(AccountId, Balance),
+    FtTransfer(AccountId, AccountId, Balance),
 }
 
 #[derive(Serialize)]
@@ -60,6 +61,14 @@ struct AddKeyArgs {
 #[derive(Serialize)]
 #[serde(crate = "near_sdk::serde")]
 struct TransferArgs {
+    to: AccountId,
+    amount: Balance,
+}
+
+#[derive(Serialize)]
+#[serde(crate = "near_sdk::serde")]
+struct FtTransferArgs {
+    ft_id: AccountId,
     to: AccountId,
     amount: Balance,
 }
@@ -127,6 +136,20 @@ impl AuthManager {
         Promise::new(account_id.parse().unwrap()).function_call_weight(
             "transfer".to_owned(),
             transfer_args,
+            0,
+            Gas(200_000_000_000_000),
+            GasWeight(1),
+        );
+    }
+
+    fn ft_transfer(ft_id: AccountId, prefix: String, to: AccountId, amount: Balance) {
+        let account_id = prefix + "." + &env::current_account_id().to_string();
+        let ft_transfer_args =
+            near_sdk::serde_json::to_vec(&FtTransferArgs { ft_id, to, amount }).unwrap();
+
+        Promise::new(account_id.parse().unwrap()).function_call_weight(
+            "ft_transfer".to_owned(),
+            ft_transfer_args,
             0,
             Gas(200_000_000_000_000),
             GasWeight(1),
@@ -201,6 +224,18 @@ impl AuthManager {
 
             return CommandEnum::Transfer(account, amount);
         }
+
+        if header.starts_with("ft_transfer") {
+            let data: Vec<&str> = header.split_whitespace().collect();
+            assert_eq!(4, data.len());
+            assert_eq!("ft_transfer", data[0]);
+            let amount: u128 = data[3].parse().unwrap();
+
+            let ft_id: AccountId = data[1].parse().unwrap();
+            let to_account: AccountId = data[2].parse().unwrap();
+
+            return CommandEnum::FtTransfer(ft_id, to_account, amount);
+        }
         panic!("Wrong header");
     }
 
@@ -231,6 +266,9 @@ impl AuthManager {
             CommandEnum::Init => AuthManager::create_new_subaccount(prefix),
             CommandEnum::AddKey(key) => AuthManager::add_key(prefix, key),
             CommandEnum::Transfer(to, amount) => AuthManager::transfer(prefix, to, amount),
+            CommandEnum::FtTransfer(ft_id, to, amount) => {
+                AuthManager::ft_transfer(ft_id, prefix, to, amount)
+            }
             _ => todo!(),
         }
     }
