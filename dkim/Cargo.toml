@@ -1,0 +1,21 @@
+[package]
+name = "near-dkim"
+version = "1.0.0"
+authors = ["Near Inc <hello@near.org>"]
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+ed25519-dalek = "1.0.1"
+mailparse = "0.13.7"
+quick-error = "2.0.1"
+nom = "7.1.0"
+chrono = { version = "0.4.19", default-features = false, features = ["clock", "std"] }
+sha-1 = "0.10"
+sha2 = "0.10"
+base64 = "0.13.0"
+rsa = "0.6"
+indexmap = "1.8.0"
+
+[dev-dependencies]
+regex = "1"

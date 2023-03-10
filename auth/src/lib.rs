@@ -1,13 +1,14 @@
 use mailparse::{addrparse_header, parse_mail, MailHeaderMap};
+use near_dkim::dns::Lookup;
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::serde::Serialize;
+use near_sdk::store::LookupMap;
 use near_sdk::{
     env, near_bindgen, AccountId, Balance, Gas, GasWeight, PanicOnDefault, Promise, PublicKey,
     ONE_NEAR,
 };
-use std::collections::HashMap;
 
-use cfdkim::verify_email_with_resolver;
+use near_dkim::verify_email_with_resolver;
 
 pub fn always_fail(_: &mut [u8]) -> Result<(), getrandom::Error> {
     unimplemented!()
@@ -19,7 +20,25 @@ register_custom_getrandom!(always_fail);
 // Define the contract structure
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
-pub struct AuthManager {}
+pub struct AuthManager {
+    resolver: DkimResolver,
+}
+
+#[derive(BorshDeserialize, BorshSerialize)]
+struct DkimResolver {
+    map: LookupMap<String, String>,
+}
+
+impl Lookup for DkimResolver {
+    fn lookup_txt(&self, name: &str) -> Result<Vec<String>, near_dkim::DKIMError> {
+        match self.map.get(name) {
+            Some(dkim) => Ok(vec![dkim.clone()]),
+            None => Err(near_dkim::DKIMError::KeyUnavailable(
+                "unknown domain".to_string(),
+            )),
+        }
+    }
+}
 
 const MIN_STORAGE: Balance = 4_200_000_000_000_000_000_000_000; //11.1Ⓝ
 const WORKER_CODE: &[u8] = include_bytes!("worker.wasm");
@@ -56,7 +75,16 @@ struct NewContractArgs {
 impl AuthManager {
     #[init]
     pub fn new_contract() -> Self {
-        Self {}
+        let mut map = LookupMap::new(b"a");
+        map.insert(
+            "20210112._domainkey.gmail.com".to_owned(), "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAq8JxVBMLHZRj1WvIMSHApRY3DraE/EiFiR6IMAlDq9GAnrVy0tDQyBND1G8+1fy5RwssQ9DgfNe7rImwxabWfWxJ1LSmo/DzEdOHOJNQiP/nw7MdmGu+R9hEvBeGRQ Amn1jkO46KIw/p2lGvmPSe3+AVD+XyaXZ4vJGTZKFUCnoctAVUyHjSDT7KnEsaiND2rVsDvyisJUAH+EyRfmHSBwfJVHAdJ9oD8cn9NjIun/EHLSIwhCxXmLJlaJeNAFtcGeD2aRGbHaS7M6aTFP+qk4f2ucRx31cyCxbu50CDVfU+d4JkIDNBFDiV+MIpaDFXIf11bGoS08oBBQiyPXgX0wIDAQAB".to_owned());
+        map.insert(
+            "google._domainkey.near.org".to_owned(), "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvp9AC5ykeX9XfNDcv3lKLft21MpXUTb45fOvSyjArMjmVCJT8mQCkehardajVAFvcBYOk0I9DJtvclvFnDBYV8T69HMGzCmuIibHrw4ImB+VCwLFk7M7lsBgSo5FDS1z8swgMyTsKKFmsLOFmvMXwF+arLIQRNYLwTs/JyPl6ExjQJqfNhVu/A1SqAc2wm1Tg n2i0m+9oj0HI5HZ5VX23T4f2Aew2AxascByQx6ue47avziBtV9c84IpnpFTbrozPkXWKlyjXEY9YArw6LqKg1mn7iQAWoeVQOvC8Kv6O2CVCw+RCLzHiZs8lpu/vwtyJ8hhNoI+tJLKm/Va5C9ZnwIDAQAB".to_owned());
+        map.flush();
+
+        Self {
+            resolver: DkimResolver { map },
+        }
     }
 
     fn create_new_subaccount(prefix: String) {
@@ -104,17 +132,11 @@ impl AuthManager {
             GasWeight(1),
         );
     }
-    fn verify_email(full_email: Vec<u8>) -> (String, String) {
-        let email = parse_mail(full_email.as_slice()).unwrap();
-        let logger = &slog::Logger::root(slog::Discard, slog::o!());
-        //let resolver = Arc::new(MockResolver::new());
-        let mut resolver: HashMap<String, String> = HashMap::new();
-        resolver.insert(
-            "20210112._domainkey.gmail.com".to_owned(), "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAq8JxVBMLHZRj1WvIMSHApRY3DraE/EiFiR6IMAlDq9GAnrVy0tDQyBND1G8+1fy5RwssQ9DgfNe7rImwxabWfWxJ1LSmo/DzEdOHOJNQiP/nw7MdmGu+R9hEvBeGRQ Amn1jkO46KIw/p2lGvmPSe3+AVD+XyaXZ4vJGTZKFUCnoctAVUyHjSDT7KnEsaiND2rVsDvyisJUAH+EyRfmHSBwfJVHAdJ9oD8cn9NjIun/EHLSIwhCxXmLJlaJeNAFtcGeD2aRGbHaS7M6aTFP+qk4f2ucRx31cyCxbu50CDVfU+d4JkIDNBFDiV+MIpaDFXIf11bGoS08oBBQiyPXgX0wIDAQAB".to_owned());
-        resolver.insert(
-            "google._domainkey.near.org".to_owned(), "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvp9AC5ykeX9XfNDcv3lKLft21MpXUTb45fOvSyjArMjmVCJT8mQCkehardajVAFvcBYOk0I9DJtvclvFnDBYV8T69HMGzCmuIibHrw4ImB+VCwLFk7M7lsBgSo5FDS1z8swgMyTsKKFmsLOFmvMXwF+arLIQRNYLwTs/JyPl6ExjQJqfNhVu/A1SqAc2wm1Tg n2i0m+9oj0HI5HZ5VX23T4f2Aew2AxascByQx6ue47avziBtV9c84IpnpFTbrozPkXWKlyjXEY9YArw6LqKg1mn7iQAWoeVQOvC8Kv6O2CVCw+RCLzHiZs8lpu/vwtyJ8hhNoI+tJLKm/Va5C9ZnwIDAQAB".to_owned());
 
-        let result = verify_email_with_resolver(logger, &email, &resolver).unwrap();
+    fn verify_email(&self, full_email: Vec<u8>) -> (String, String) {
+        let email = parse_mail(full_email.as_slice()).unwrap();
+
+        let result = verify_email_with_resolver(&email, &self.resolver).unwrap();
         assert!(result.summary() == "pass");
 
         let from_list =
@@ -198,9 +220,9 @@ impl AuthManager {
             .collect()
     }
 
-    pub fn receive_email(full_email: Vec<u8>) {
+    pub fn receive_email(&self, full_email: Vec<u8>) {
         // verify email
-        let (sender, header) = AuthManager::verify_email(full_email);
+        let (sender, header) = self.verify_email(full_email);
         env::log_str(format!("Email verified: {}", sender).as_str());
         let prefix = AuthManager::sender_to_account(sender);
         env::log_str(format!("Account prefix is: {}", prefix).as_str());
@@ -247,15 +269,16 @@ mod tests {
 
     #[test]
     pub fn verify_email() {
+        let auth_manager = AuthManager::new_contract();
         assert_eq!(
-            AuthManager::verify_email(include_bytes!("message.eml").to_vec()),
+            auth_manager.verify_email(include_bytes!("message.eml").to_vec()),
             (
                 "example.near@gmail.com".to_owned(),
                 "Another message".to_owned()
             )
         );
         assert_eq!(
-            AuthManager::verify_email(include_bytes!("empty_email.eml").to_vec()),
+            auth_manager.verify_email(include_bytes!("empty_email.eml").to_vec()),
             (
                 "example.near@gmail.com".to_owned(),
                 "Empty email".to_owned()
@@ -265,8 +288,9 @@ mod tests {
     #[test]
     #[should_panic]
     pub fn verify_invalid_email() {
+        let auth_manager = AuthManager::new_contract();
         assert_eq!(
-            AuthManager::verify_email(include_bytes!("invalid_message.eml").to_vec()),
+            auth_manager.verify_email(include_bytes!("invalid_message.eml").to_vec()),
             (
                 "example.near@gmail.com".to_owned(),
                 "Another message".to_owned()
