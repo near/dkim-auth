@@ -185,11 +185,11 @@ impl AuthManager {
     fn parse_command(subject: String) -> CommandEnum {
         let cmds: Vec<&str> = subject.split_whitespace().collect();
         match cmds.as_slice() {
-            &["init"] => CommandEnum::Init,
-            &["add_key", key] => CommandEnum::AddKey(AuthManager::validate_key(key)),
+            ["init"] => CommandEnum::Init,
+            ["add_key", key] => CommandEnum::AddKey(AuthManager::validate_key(key)),
             // TODO: Unsupported for now, this command should accept a public key and delete it
-            &["delete_key"] => CommandEnum::DeleteKey,
-            &["transfer", account, amount] => {
+            ["delete_key"] => CommandEnum::DeleteKey,
+            ["transfer", account, amount] => {
                 let amount: f64 = amount.parse().unwrap_or_else(|err| {
                     env::panic_str(&format!(
                         "Failed to transfer due to malformed amount: {}",
@@ -237,7 +237,7 @@ impl AuthManager {
         env::log_str(format!("Email verified: {}", sender).as_str());
         let prefix = AuthManager::sender_to_account(sender);
         env::log_str(format!("Account prefix is: {}", prefix).as_str());
-        let account_id: AccountId = (prefix + "." + &env::current_account_id().to_string())
+        let account_id: AccountId = (prefix + "." + env::current_account_id().as_ref())
             .parse()
             .unwrap_or_else(|_| {
                 env::panic_str("Unexpected error: failed to derive a valid account id")
