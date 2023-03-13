@@ -4,8 +4,8 @@ use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::serde::Serialize;
 use near_sdk::store::LookupMap;
 use near_sdk::{
-    env, near_bindgen, AccountId, Balance, Gas, GasWeight, PanicOnDefault, Promise, PublicKey,
-    ONE_NEAR,
+    env, near_bindgen, require, AccountId, Balance, Gas, GasWeight, PanicOnDefault, Promise,
+    PublicKey, ONE_NEAR,
 };
 
 use near_dkim::verify_email_with_resolver;
@@ -46,7 +46,7 @@ const WORKER_CODE: &[u8] = include_bytes!("worker.wasm");
 #[derive(Debug, PartialEq)]
 pub enum CommandEnum {
     Init,
-    AddKey(String),
+    AddKey(PublicKey),
     DeleteKey,
     Transfer(AccountId, Balance),
 }
@@ -87,121 +87,129 @@ impl AuthManager {
         }
     }
 
-    fn create_new_subaccount(prefix: String) {
-        let account_id = prefix + "." + &env::current_account_id().to_string();
+    fn create_new_subaccount(account_id: AccountId) {
         let create_args = near_sdk::serde_json::to_vec(&NewContractArgs {
             owner_id: env::current_account_id(),
         })
         .unwrap();
 
-        Promise::new(account_id.parse().unwrap())
+        Promise::new(account_id)
             .create_account()
             .transfer(MIN_STORAGE)
             .deploy_contract(WORKER_CODE.to_vec())
-            .function_call(
+            .function_call_weight(
                 "new_contract".to_owned(),
                 create_args,
                 0,
-                Gas(200_000_000_000_000),
+                Gas(0),
+                GasWeight(1),
             );
     }
 
-    fn add_key(prefix: String, key: String) {
-        let account_id = prefix + "." + &env::current_account_id().to_string();
-        let public_key: PublicKey = key.parse().unwrap();
+    fn add_key(account_id: AccountId, public_key: PublicKey) {
         let add_key_args = near_sdk::serde_json::to_vec(&AddKeyArgs { public_key }).unwrap();
 
-        Promise::new(account_id.parse().unwrap()).function_call_weight(
+        Promise::new(account_id).function_call_weight(
             "add_key".to_owned(),
             add_key_args,
             0,
-            Gas(200_000_000_000_000),
+            Gas(0),
             GasWeight(1),
         );
     }
 
-    fn transfer(prefix: String, to: AccountId, amount: Balance) {
-        let account_id = prefix + "." + &env::current_account_id().to_string();
+    fn transfer(account_id: AccountId, to: AccountId, amount: Balance) {
         let transfer_args = near_sdk::serde_json::to_vec(&TransferArgs { to, amount }).unwrap();
 
-        Promise::new(account_id.parse().unwrap()).function_call_weight(
+        Promise::new(account_id).function_call_weight(
             "transfer".to_owned(),
             transfer_args,
             0,
-            Gas(200_000_000_000_000),
+            Gas(0),
             GasWeight(1),
         );
     }
 
     fn verify_email(&self, full_email: Vec<u8>) -> (String, String) {
-        let email = parse_mail(full_email.as_slice()).unwrap();
+        let email = parse_mail(full_email.as_slice())
+            .unwrap_or_else(|err| env::panic_str(&format!("The email is malformed: {}", err)));
 
-        let result = verify_email_with_resolver(&email, &self.resolver).unwrap();
-        assert!(result.summary() == "pass");
+        let result = verify_email_with_resolver(&email, &self.resolver)
+            .unwrap_or_else(|err| env::panic_str(&format!("Email verification failed: {}", err)));
+        require!(
+            result.summary() == "pass",
+            "Email signature does not match its contents"
+        );
 
-        let from_list =
-            addrparse_header(email.get_headers().get_first_header("From").unwrap()).unwrap();
+        let headers = email.get_headers();
+        let from_header = headers
+            .get_first_header("From")
+            .unwrap_or_else(|| env::panic_str("The email lacks \"From\" header"));
+        let mut from_list = addrparse_header(from_header).unwrap_or_else(|err| {
+            env::panic_str(&format!("The email \"From\" header is malformed: {}", err))
+        });
+        require!(
+            from_list.len() == 1,
+            "The email \"From\" header contains more than one author"
+        );
+        let from = from_list.swap_remove(0);
 
-        let addr = match &from_list[0] {
-            mailparse::MailAddr::Single(single_email) => single_email.addr.clone(),
-            _ => panic!("invalid From header"),
+        let addr = match from {
+            mailparse::MailAddr::Single(single_email) => single_email.addr,
+            _ => env::panic_str("The email \"From\" header contains a group of addresses"),
         };
 
-        (
-            addr,
-            email
-                .get_headers()
-                .get_first_header("Subject")
-                .unwrap()
-                .get_value(),
-        )
+        let subject = match email.get_headers().get_first_header("Subject") {
+            Some(subject_header) => subject_header.get_value(),
+            None => env::panic_str("The email lacks \"From\" header"),
+        };
+
+        (addr, subject)
     }
 
-    fn validate_key(key: &String) {
-        assert!(key.starts_with("ed25519:"));
-        assert_eq!(key.len(), 52);
-        assert!(key
+    fn validate_key(key: &str) -> PublicKey {
+        require!(key.len() == 52, "The key length is not 52");
+        let key_suffix = key
             .strip_prefix("ed25519:")
-            .unwrap()
-            .chars()
-            .all(|x| match x {
-                'A'..='Z' => true,
-                'a'..='z' => true,
-                '0'..='9' => true,
-                _ => panic!("invalid char {}", x),
-            }));
+            .unwrap_or_else(|| env::panic_str("The key prefix does not match \"ed25519:\""));
+
+        key_suffix.chars().for_each(|x| match x {
+            'A'..='Z' | 'a'..='z' | '0'..='9' => (),
+            _ => env::panic_str(&format!("The key contains an invalid character '{}'", x)),
+        });
+
+        key.parse()
+            .unwrap_or_else(|err| env::panic_str(&format!("The key is malformed: {}", err)))
     }
 
-    fn parse_command(header: String) -> CommandEnum {
-        if header == "init" {
-            return CommandEnum::Init;
+    fn parse_command(subject: String) -> CommandEnum {
+        let cmds: Vec<&str> = subject.split_whitespace().collect();
+        match cmds.as_slice() {
+            &["init"] => CommandEnum::Init,
+            &["add_key", key] => CommandEnum::AddKey(AuthManager::validate_key(key)),
+            // TODO: Unsupported for now, this command should accept a public key and delete it
+            &["delete_key"] => CommandEnum::DeleteKey,
+            &["transfer", account, amount] => {
+                let amount: f64 = amount.parse().unwrap_or_else(|err| {
+                    env::panic_str(&format!(
+                        "Failed to transfer due to malformed amount: {}",
+                        err
+                    ))
+                });
+                require!(amount > 0.0, "Transfer amount must be positive");
+                let amount = ((amount * 100.0) as u128) * (ONE_NEAR / 100);
+
+                let account: AccountId = account.parse().unwrap_or_else(|err| {
+                    env::panic_str(&format!(
+                        "Failed to transfer due to malformed account: {}",
+                        err
+                    ))
+                });
+
+                CommandEnum::Transfer(account, amount)
+            }
+            _ => env::panic_str("Unrecognized subject"),
         }
-
-        if header.starts_with("add_key") {
-            let key = header.strip_prefix("add_key").unwrap().trim().to_owned();
-            AuthManager::validate_key(&key);
-            return CommandEnum::AddKey(key);
-        }
-
-        if header.starts_with("delete_key") {
-            return CommandEnum::DeleteKey;
-        }
-
-        if header.starts_with("transfer") {
-            let data: Vec<&str> = header.split_whitespace().collect();
-            assert_eq!(3, data.len());
-            assert_eq!("transfer", data[0]);
-            //let amount: Balance = data[2].parse().unwrap();
-            let fraction: f64 = data[2].parse().unwrap();
-            assert!(fraction > 0.0);
-
-            let amount = ((fraction * 100.0) as u128) * (ONE_NEAR / 100);
-
-            let account: AccountId = data[1].parse().unwrap();
-
-            return CommandEnum::Transfer(account, amount);
-        }
-        panic!("Wrong header");
     }
 
     fn sender_to_account(sender: String) -> String {
@@ -215,7 +223,10 @@ impl AuthManager {
                 '.' => '_',
                 '_' => x,
                 '-' => x,
-                _ => panic!("Unsupported char {}", x),
+                _ => env::panic_str(&format!(
+                    "The sender email contains an unsupported character '{}'",
+                    x
+                )),
             })
             .collect()
     }
@@ -226,11 +237,16 @@ impl AuthManager {
         env::log_str(format!("Email verified: {}", sender).as_str());
         let prefix = AuthManager::sender_to_account(sender);
         env::log_str(format!("Account prefix is: {}", prefix).as_str());
+        let account_id: AccountId = (prefix + "." + &env::current_account_id().to_string())
+            .parse()
+            .unwrap_or_else(|_| {
+                env::panic_str("Unexpected error: failed to derive a valid account id")
+            });
         let cmd = AuthManager::parse_command(header);
         match cmd {
-            CommandEnum::Init => AuthManager::create_new_subaccount(prefix),
-            CommandEnum::AddKey(key) => AuthManager::add_key(prefix, key),
-            CommandEnum::Transfer(to, amount) => AuthManager::transfer(prefix, to, amount),
+            CommandEnum::Init => AuthManager::create_new_subaccount(account_id),
+            CommandEnum::AddKey(key) => AuthManager::add_key(account_id, key),
+            CommandEnum::Transfer(to, amount) => AuthManager::transfer(account_id, to, amount),
             _ => todo!(),
         }
     }
@@ -251,7 +267,11 @@ mod tests {
             AuthManager::parse_command(
                 "add_key ed25519:3tXAA9zf5YSLxYELSbxwhEvMd7h9itTfCcUfEc3QfPgD".to_owned()
             ),
-            CommandEnum::AddKey("ed25519:3tXAA9zf5YSLxYELSbxwhEvMd7h9itTfCcUfEc3QfPgD".to_owned())
+            CommandEnum::AddKey(
+                "ed25519:3tXAA9zf5YSLxYELSbxwhEvMd7h9itTfCcUfEc3QfPgD"
+                    .parse()
+                    .unwrap()
+            )
         );
         assert_eq!(
             AuthManager::parse_command(
@@ -259,7 +279,11 @@ mod tests {
                 \n"
                 .to_owned()
             ),
-            CommandEnum::AddKey("ed25519:3tXAA9zf5YSLxYELSbxwhEvMd7h9itTfCcUfEc3QfPgD".to_owned())
+            CommandEnum::AddKey(
+                "ed25519:3tXAA9zf5YSLxYELSbxwhEvMd7h9itTfCcUfEc3QfPgD"
+                    .parse()
+                    .unwrap()
+            )
         );
         assert_eq!(
             AuthManager::parse_command("transfer foobar.near 134".to_owned()),
