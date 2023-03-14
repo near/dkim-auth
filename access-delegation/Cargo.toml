@@ -1,8 +1,8 @@
 
 
 [package]
-name = "contract"
-version = "1.0.0"
+name = "near-access-delegation"
+version = "0.0.1"
 authors = ["Near Inc <hello@near.org>"]
 edition = "2021"
 
@@ -12,11 +12,6 @@ crate-type = ["cdylib"]
 [dependencies]
 near-sdk = "4.0.0"
 uint = { version = "0.9.3", default-features = false }
-mail-parser = "0.7.0"
-mailparse = "0.13.7"
-getrandom = { version = "0.2", features = ["custom"] }
-
-near-dkim = { path = "../dkim"}
 
 [profile.release]
 codegen-units = 1

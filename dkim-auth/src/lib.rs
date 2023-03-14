@@ -20,7 +20,7 @@ register_custom_getrandom!(always_fail);
 // Define the contract structure
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
-pub struct AuthManager {
+pub struct DkimAuth {
     resolver: DkimResolver,
 }
 
@@ -41,7 +41,7 @@ impl Lookup for DkimResolver {
 }
 
 const MIN_STORAGE: Balance = 4_200_000_000_000_000_000_000_000; //11.1Ⓝ
-const WORKER_CODE: &[u8] = include_bytes!("worker.wasm");
+const ACCESS_DELEGATION_CODE: &[u8] = include_bytes!("near_access_delegation.wasm");
 
 #[derive(Debug, PartialEq)]
 pub enum CommandEnum {
@@ -72,9 +72,9 @@ struct NewContractArgs {
 
 // Implement the contract structure
 #[near_bindgen]
-impl AuthManager {
+impl DkimAuth {
     #[init]
-    pub fn new_contract() -> Self {
+    pub fn new() -> Self {
         let mut map = LookupMap::new(b"a");
         map.insert(
             "20210112._domainkey.gmail.com".to_owned(), "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAq8JxVBMLHZRj1WvIMSHApRY3DraE/EiFiR6IMAlDq9GAnrVy0tDQyBND1G8+1fy5RwssQ9DgfNe7rImwxabWfWxJ1LSmo/DzEdOHOJNQiP/nw7MdmGu+R9hEvBeGRQ Amn1jkO46KIw/p2lGvmPSe3+AVD+XyaXZ4vJGTZKFUCnoctAVUyHjSDT7KnEsaiND2rVsDvyisJUAH+EyRfmHSBwfJVHAdJ9oD8cn9NjIun/EHLSIwhCxXmLJlaJeNAFtcGeD2aRGbHaS7M6aTFP+qk4f2ucRx31cyCxbu50CDVfU+d4JkIDNBFDiV+MIpaDFXIf11bGoS08oBBQiyPXgX0wIDAQAB".to_owned());
@@ -96,9 +96,9 @@ impl AuthManager {
         Promise::new(account_id)
             .create_account()
             .transfer(MIN_STORAGE)
-            .deploy_contract(WORKER_CODE.to_vec())
+            .deploy_contract(ACCESS_DELEGATION_CODE.to_vec())
             .function_call_weight(
-                "new_contract".to_owned(),
+                "set_owner".to_owned(),
                 create_args,
                 0,
                 Gas(0),
@@ -186,7 +186,7 @@ impl AuthManager {
         let cmds: Vec<&str> = subject.split_whitespace().collect();
         match cmds.as_slice() {
             ["init"] => CommandEnum::Init,
-            ["add_key", key] => CommandEnum::AddKey(AuthManager::validate_key(key)),
+            ["add_key", key] => CommandEnum::AddKey(DkimAuth::validate_key(key)),
             // TODO: Unsupported for now, this command should accept a public key and delete it
             ["delete_key"] => CommandEnum::DeleteKey,
             ["transfer", account, amount] => {
@@ -235,18 +235,18 @@ impl AuthManager {
         // verify email
         let (sender, header) = self.verify_email(full_email);
         env::log_str(format!("Email verified: {}", sender).as_str());
-        let prefix = AuthManager::sender_to_account(sender);
+        let prefix = DkimAuth::sender_to_account(sender);
         env::log_str(format!("Account prefix is: {}", prefix).as_str());
         let account_id: AccountId = (prefix + "." + env::current_account_id().as_ref())
             .parse()
             .unwrap_or_else(|_| {
                 env::panic_str("Unexpected error: failed to derive a valid account id")
             });
-        let cmd = AuthManager::parse_command(header);
+        let cmd = DkimAuth::parse_command(header);
         match cmd {
-            CommandEnum::Init => AuthManager::create_new_subaccount(account_id),
-            CommandEnum::AddKey(key) => AuthManager::add_key(account_id, key),
-            CommandEnum::Transfer(to, amount) => AuthManager::transfer(account_id, to, amount),
+            CommandEnum::Init => DkimAuth::create_new_subaccount(account_id),
+            CommandEnum::AddKey(key) => DkimAuth::add_key(account_id, key),
+            CommandEnum::Transfer(to, amount) => DkimAuth::transfer(account_id, to, amount),
             _ => todo!(),
         }
     }
@@ -259,12 +259,12 @@ mod tests {
     #[test]
     pub fn test_parse_command() {
         assert_eq!(
-            AuthManager::parse_command("init".to_owned()),
+            DkimAuth::parse_command("init".to_owned()),
             CommandEnum::Init
         );
 
         assert_eq!(
-            AuthManager::parse_command(
+            DkimAuth::parse_command(
                 "add_key ed25519:3tXAA9zf5YSLxYELSbxwhEvMd7h9itTfCcUfEc3QfPgD".to_owned()
             ),
             CommandEnum::AddKey(
@@ -274,7 +274,7 @@ mod tests {
             )
         );
         assert_eq!(
-            AuthManager::parse_command(
+            DkimAuth::parse_command(
                 "add_key     ed25519:3tXAA9zf5YSLxYELSbxwhEvMd7h9itTfCcUfEc3QfPgD
                 \n"
                 .to_owned()
@@ -286,14 +286,14 @@ mod tests {
             )
         );
         assert_eq!(
-            AuthManager::parse_command("transfer foobar.near 134".to_owned()),
+            DkimAuth::parse_command("transfer foobar.near 134".to_owned()),
             CommandEnum::Transfer("foobar.near".parse().unwrap(), 134 * ONE_NEAR)
         );
     }
 
     #[test]
     pub fn verify_email() {
-        let auth_manager = AuthManager::new_contract();
+        let auth_manager = DkimAuth::new();
         assert_eq!(
             auth_manager.verify_email(include_bytes!("message.eml").to_vec()),
             (
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     #[should_panic]
     pub fn verify_invalid_email() {
-        let auth_manager = AuthManager::new_contract();
+        let auth_manager = DkimAuth::new();
         assert_eq!(
             auth_manager.verify_email(include_bytes!("invalid_message.eml").to_vec()),
             (

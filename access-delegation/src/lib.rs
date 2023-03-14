@@ -4,15 +4,15 @@ use near_sdk::{env, near_bindgen, AccountId, Balance, PanicOnDefault, Promise, P
 // Define the contract structure
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
-pub struct Contract {
+pub struct AccessDelegation {
     owner_id: AccountId,
 }
 
 // Implement the contract structure
 #[near_bindgen]
-impl Contract {
+impl AccessDelegation {
     #[init]
-    pub fn new_contract(owner_id: AccountId) -> Self {
+    pub fn set_owner(owner_id: AccountId) -> Self {
         Self { owner_id }
     }
 
