@@ -8,12 +8,12 @@ Email would be signed by the sender's server (in current design, we only support
 
 ## High level design
 
-The setup consists of 3 sub-projects: access-delegation contract,  dkim-auth contract and email-relayer server.
+The setup consists of 3 sub-projects: control-delegator contract,  dkim-controller contract and email-relayer server.
 
-### access-delegation contract
-This is the contract that is running on the 'users' account - to handle delegated requests coming from the dkim-auth contract.
+### control-delegator contract
+This is the contract that is running on the 'users' account - to handle delegated requests coming from the dkim-controller contract.
 
-### dkim-auth contract
+### dkim-controller contract
 This is the main contract that takes are of validating DKIM messages - and passing them to workers (and creating workers accounts).
 
 ### email-relayer server

@@ -20,7 +20,7 @@ register_custom_getrandom!(always_fail);
 // Define the contract structure
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
-pub struct DkimAuth {
+pub struct DkimController {
     resolver: DkimResolver,
 }
 
@@ -41,7 +41,7 @@ impl Lookup for DkimResolver {
 }
 
 const MIN_STORAGE: Balance = 4_200_000_000_000_000_000_000_000; //11.1Ⓝ
-const ACCESS_DELEGATION_CODE: &[u8] = include_bytes!("near_access_delegation.wasm");
+const ACCESS_DELEGATOR_CODE: &[u8] = include_bytes!("access_delegator.wasm");
 
 #[derive(Debug, PartialEq)]
 pub enum CommandEnum {
@@ -67,12 +67,12 @@ struct TransferArgs {
 #[derive(Serialize)]
 #[serde(crate = "near_sdk::serde")]
 struct NewContractArgs {
-    owner_id: AccountId,
+    controller_id: AccountId,
 }
 
 // Implement the contract structure
 #[near_bindgen]
-impl DkimAuth {
+impl DkimController {
     #[init]
     pub fn new() -> Self {
         let mut map = LookupMap::new(b"a");
@@ -89,16 +89,16 @@ impl DkimAuth {
 
     fn create_new_subaccount(account_id: AccountId) {
         let create_args = near_sdk::serde_json::to_vec(&NewContractArgs {
-            owner_id: env::current_account_id(),
+            controller_id: env::current_account_id(),
         })
         .unwrap();
 
         Promise::new(account_id)
             .create_account()
             .transfer(MIN_STORAGE)
-            .deploy_contract(ACCESS_DELEGATION_CODE.to_vec())
+            .deploy_contract(ACCESS_DELEGATOR_CODE.to_vec())
             .function_call_weight(
-                "set_owner".to_owned(),
+                "set_controller".to_owned(),
                 create_args,
                 0,
                 Gas(0),
@@ -186,7 +186,7 @@ impl DkimAuth {
         let cmds: Vec<&str> = subject.split_whitespace().collect();
         match cmds.as_slice() {
             ["init"] => CommandEnum::Init,
-            ["add_key", key] => CommandEnum::AddKey(DkimAuth::validate_key(key)),
+            ["add_key", key] => CommandEnum::AddKey(DkimController::validate_key(key)),
             // TODO: Unsupported for now, this command should accept a public key and delete it
             ["delete_key"] => CommandEnum::DeleteKey,
             ["transfer", account, amount] => {
@@ -235,18 +235,18 @@ impl DkimAuth {
         // verify email
         let (sender, header) = self.verify_email(full_email);
         env::log_str(format!("Email verified: {}", sender).as_str());
-        let prefix = DkimAuth::sender_to_account(sender);
+        let prefix = DkimController::sender_to_account(sender);
         env::log_str(format!("Account prefix is: {}", prefix).as_str());
         let account_id: AccountId = (prefix + "." + env::current_account_id().as_ref())
             .parse()
             .unwrap_or_else(|_| {
                 env::panic_str("Unexpected error: failed to derive a valid account id")
             });
-        let cmd = DkimAuth::parse_command(header);
+        let cmd = DkimController::parse_command(header);
         match cmd {
-            CommandEnum::Init => DkimAuth::create_new_subaccount(account_id),
-            CommandEnum::AddKey(key) => DkimAuth::add_key(account_id, key),
-            CommandEnum::Transfer(to, amount) => DkimAuth::transfer(account_id, to, amount),
+            CommandEnum::Init => DkimController::create_new_subaccount(account_id),
+            CommandEnum::AddKey(key) => DkimController::add_key(account_id, key),
+            CommandEnum::Transfer(to, amount) => DkimController::transfer(account_id, to, amount),
             _ => todo!(),
         }
     }
@@ -259,12 +259,12 @@ mod tests {
     #[test]
     pub fn test_parse_command() {
         assert_eq!(
-            DkimAuth::parse_command("init".to_owned()),
+            DkimController::parse_command("init".to_owned()),
             CommandEnum::Init
         );
 
         assert_eq!(
-            DkimAuth::parse_command(
+            DkimController::parse_command(
                 "add_key ed25519:3tXAA9zf5YSLxYELSbxwhEvMd7h9itTfCcUfEc3QfPgD".to_owned()
             ),
             CommandEnum::AddKey(
@@ -274,7 +274,7 @@ mod tests {
             )
         );
         assert_eq!(
-            DkimAuth::parse_command(
+            DkimController::parse_command(
                 "add_key     ed25519:3tXAA9zf5YSLxYELSbxwhEvMd7h9itTfCcUfEc3QfPgD
                 \n"
                 .to_owned()
@@ -286,14 +286,14 @@ mod tests {
             )
         );
         assert_eq!(
-            DkimAuth::parse_command("transfer foobar.near 134".to_owned()),
+            DkimController::parse_command("transfer foobar.near 134".to_owned()),
             CommandEnum::Transfer("foobar.near".parse().unwrap(), 134 * ONE_NEAR)
         );
     }
 
     #[test]
     pub fn verify_email() {
-        let auth_manager = DkimAuth::new();
+        let auth_manager = DkimController::new();
         assert_eq!(
             auth_manager.verify_email(include_bytes!("message.eml").to_vec()),
             (
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     #[should_panic]
     pub fn verify_invalid_email() {
-        let auth_manager = DkimAuth::new();
+        let auth_manager = DkimController::new();
         assert_eq!(
             auth_manager.verify_email(include_bytes!("invalid_message.eml").to_vec()),
             (
