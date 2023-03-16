@@ -1,8 +1,8 @@
 
 
 [package]
-name = "contract"
-version = "1.0.0"
+name = "dkim-controller"
+version = "0.0.1"
 authors = ["Near Inc <hello@near.org>"]
 edition = "2021"
 
