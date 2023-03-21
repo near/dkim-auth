@@ -41,7 +41,7 @@ impl Lookup for DkimResolver {
 }
 
 const MIN_STORAGE: Balance = 4_200_000_000_000_000_000_000_000; //11.1Ⓝ
-const ACCESS_DELEGATOR_CODE: &[u8] = include_bytes!("access_delegator.wasm");
+const ACCESS_DELEGATOR_CODE: &[u8] = include_bytes!("control_delegator.wasm");
 
 #[derive(Debug, PartialEq)]
 pub enum CommandEnum {
@@ -74,12 +74,15 @@ struct NewContractArgs {
 #[near_bindgen]
 impl DkimController {
     #[init]
-    pub fn new() -> Self {
+    pub fn new(dkim_entries: Vec<(String, String)>) -> Self {
         let mut map = LookupMap::new(b"a");
         map.insert(
             "20210112._domainkey.gmail.com".to_owned(), "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAq8JxVBMLHZRj1WvIMSHApRY3DraE/EiFiR6IMAlDq9GAnrVy0tDQyBND1G8+1fy5RwssQ9DgfNe7rImwxabWfWxJ1LSmo/DzEdOHOJNQiP/nw7MdmGu+R9hEvBeGRQ Amn1jkO46KIw/p2lGvmPSe3+AVD+XyaXZ4vJGTZKFUCnoctAVUyHjSDT7KnEsaiND2rVsDvyisJUAH+EyRfmHSBwfJVHAdJ9oD8cn9NjIun/EHLSIwhCxXmLJlaJeNAFtcGeD2aRGbHaS7M6aTFP+qk4f2ucRx31cyCxbu50CDVfU+d4JkIDNBFDiV+MIpaDFXIf11bGoS08oBBQiyPXgX0wIDAQAB".to_owned());
         map.insert(
             "google._domainkey.near.org".to_owned(), "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvp9AC5ykeX9XfNDcv3lKLft21MpXUTb45fOvSyjArMjmVCJT8mQCkehardajVAFvcBYOk0I9DJtvclvFnDBYV8T69HMGzCmuIibHrw4ImB+VCwLFk7M7lsBgSo5FDS1z8swgMyTsKKFmsLOFmvMXwF+arLIQRNYLwTs/JyPl6ExjQJqfNhVu/A1SqAc2wm1Tg n2i0m+9oj0HI5HZ5VX23T4f2Aew2AxascByQx6ue47avziBtV9c84IpnpFTbrozPkXWKlyjXEY9YArw6LqKg1mn7iQAWoeVQOvC8Kv6O2CVCw+RCLzHiZs8lpu/vwtyJ8hhNoI+tJLKm/Va5C9ZnwIDAQAB".to_owned());
+        for (key, value) in dkim_entries {
+            map.insert(key, value);
+        }
         map.flush();
 
         Self {
@@ -293,7 +296,7 @@ mod tests {
 
     #[test]
     pub fn verify_email() {
-        let auth_manager = DkimController::new();
+        let auth_manager = DkimController::new(Vec::new());
         assert_eq!(
             auth_manager.verify_email(include_bytes!("message.eml").to_vec()),
             (
@@ -312,7 +315,7 @@ mod tests {
     #[test]
     #[should_panic]
     pub fn verify_invalid_email() {
-        let auth_manager = DkimController::new();
+        let auth_manager = DkimController::new(Vec::new());
         assert_eq!(
             auth_manager.verify_email(include_bytes!("invalid_message.eml").to_vec()),
             (
