@@ -221,27 +221,69 @@ impl Mailserver {
         Self::create_email_address(&self.docker, &self.id, &self.domain, username, password).await
     }
 
-    pub fn init(
+    fn send_email(
         &self,
         from: &Address,
-        to: &Address,
+        dkim_controller: &Address,
         from_creds: &Credentials,
+        subject: &str,
     ) -> anyhow::Result<()> {
         let email = Message::builder()
             .from(Mailbox::new(None, from.clone()))
-            .to(Mailbox::new(None, to.clone()))
-            .subject("init")
+            .to(Mailbox::new(None, dkim_controller.clone()))
+            .subject(subject)
             .header(ContentType::TEXT_PLAIN)
             .body("".to_string())?;
 
-        // Open a remote connection to gmail
+        // Open a non-tls connection to docker mailserver
         let mailer = SmtpTransport::builder_dangerous(&self.ip_address)
             .credentials(from_creds.clone())
             .build();
 
-        // Send the email
         mailer.send(&email)?;
 
         Ok(())
+    }
+
+    fn email_to_account<T: AsRef<str>>(email: T) -> String {
+        email
+            .as_ref()
+            .chars()
+            .map(|x| match x {
+                'a'..='z' => x,
+                'A'..='Z' => x,
+                '0'..='9' => x,
+                '@' => '_',
+                '.' => '_',
+                '_' => x,
+                '-' => x,
+                _ => panic!("The email contains an unsupported character '{}'", x),
+            })
+            .collect()
+    }
+
+    pub fn init(
+        &self,
+        from: &Address,
+        dkim_controller: &Address,
+        from_creds: &Credentials,
+    ) -> anyhow::Result<()> {
+        self.send_email(from, dkim_controller, from_creds, "init")
+    }
+
+    pub fn transfer(
+        &self,
+        from: &Address,
+        to: &Address,
+        amount: f64,
+        dkim_controller: &Address,
+        from_creds: &Credentials,
+    ) -> anyhow::Result<()> {
+        self.send_email(
+            from,
+            dkim_controller,
+            from_creds,
+            &format!("transfer {} {:.2}", Self::email_to_account(&to), amount),
+        )
     }
 }

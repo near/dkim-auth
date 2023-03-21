@@ -14,12 +14,15 @@ async fn test_bollard() -> anyhow::Result<()> {
     let mailserver = mailserver::Mailserver::new("email.near.org").await?;
 
     let (auth_address, _) = mailserver.create_email("authservice", "12345").await?;
-    let (user_address, user_creds) = mailserver.create_email("user", "67890").await?;
+    let (user1_address, user1_creds) = mailserver.create_email("user1", "67890").await?;
+    let (user2_address, user2_creds) = mailserver.create_email("user2", "09876").await?;
 
     let worker = workspaces::testnet().await?;
     let (account_id, secret_key) = worker.dev_generate().await;
     let Execution {
-        result: contract, ..
+        result: contract,
+        details,
+        ..
     } = worker
         .create_tla_and_deploy(
             account_id.clone(),
@@ -27,6 +30,8 @@ async fn test_bollard() -> anyhow::Result<()> {
             &dkim_controller_wasm,
         )
         .await?;
+
+    println!("Account {} was created by {:?}", account_id, details);
 
     contract
         .call("new")
@@ -55,7 +60,16 @@ async fn test_bollard() -> anyhow::Result<()> {
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    mailserver.init(&user_address, &auth_address, &user_creds)?;
+    mailserver.init(&user1_address, &auth_address, &user1_creds)?;
+    mailserver.init(&user2_address, &auth_address, &user2_creds)?;
+
+    mailserver.transfer(
+        &user1_address,
+        &user2_address,
+        1.0,
+        &auth_address,
+        &user1_creds,
+    )?;
 
     handle.await?;
 
