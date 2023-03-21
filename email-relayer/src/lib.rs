@@ -113,14 +113,14 @@ async fn send_mail<N: Network + ?Sized>(
     Ok(())
 }
 
-pub async fn run(
+pub async fn run<D: AsRef<str>, U: AsRef<str>, P: AsRef<str>>(
     signer_account: &AccountId,
     signer_account_secret_key: &SecretKey,
     controller_account: &AccountId,
-    domain: &str,
+    domain: &D,
     ssl: bool,
-    imap_username: &str,
-    imap_password: &str,
+    imap_username: &U,
+    imap_password: &P,
 ) -> anyhow::Result<()> {
     // TODO: Make network dynamically choosable based on SENDER_NEAR_NETWORK
     let worker = workspaces::testnet().await?;
@@ -131,13 +131,24 @@ pub async fn run(
 
     // TODO: Properly detect unprocessed emails. See https://github.com/near/email-auth/issues/4
     let mut min_value = 0;
-    let (value, _) = fetch_inbox_from(min_value, domain, ssl, imap_username, imap_password)?;
+    let (value, _) = fetch_inbox_from(
+        min_value,
+        domain.as_ref(),
+        ssl,
+        imap_username.as_ref(),
+        imap_password.as_ref(),
+    )?;
     min_value = value;
     println!("Already {} email present - ignoring.", min_value);
 
     loop {
-        let (value, mails) =
-            fetch_inbox_from(min_value, domain, ssl, imap_username, imap_password)?;
+        let (value, mails) = fetch_inbox_from(
+            min_value,
+            domain.as_ref(),
+            ssl,
+            imap_username.as_ref(),
+            imap_password.as_ref(),
+        )?;
         min_value = value;
         if !mails.is_empty() {
             println!("Got new mail: {:?}", mails.len());

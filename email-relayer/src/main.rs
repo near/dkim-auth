@@ -22,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
         &signer_account,
         &signer_account_secret_key,
         &controller_account,
-        "imap.gmail.com",
+        &"imap.gmail.com",
         true,
         &imap_username,
         &imap_password,

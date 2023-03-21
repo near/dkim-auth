@@ -4,6 +4,10 @@ use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::image::CreateImageOptions;
 use bollard::Docker;
 use futures::{StreamExt, TryStreamExt};
+use lettre::message::header::ContentType;
+use lettre::message::Mailbox;
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{Address, Message, SmtpTransport, Transport};
 use std::collections::HashMap;
 use tokio::io::AsyncWriteExt;
 use tokio::spawn;
@@ -12,6 +16,7 @@ const IMAGE: &str = "mailserver/docker-mailserver:11";
 
 pub struct Mailserver {
     docker: Docker,
+    pub domain: String,
     pub ip_address: String,
     id: String,
     pub dkim_entry: DkimEntry,
@@ -48,14 +53,14 @@ impl Mailserver {
         Ok(())
     }
 
-    async fn generate_dkim(docker: &Docker, id: &str, ip_address: &str) -> anyhow::Result<String> {
+    async fn generate_dkim(docker: &Docker, id: &str, domain: &str) -> anyhow::Result<String> {
         let exec = docker
             .create_exec(
                 id,
                 CreateExecOptions {
                     attach_stdout: Some(true),
                     attach_stderr: Some(true),
-                    cmd: Some(vec!["setup", "config", "dkim", "domain", ip_address]),
+                    cmd: Some(vec!["setup", "config", "dkim", "domain", domain]),
                     ..Default::default()
                 },
             )
@@ -79,10 +84,7 @@ impl Mailserver {
                     attach_stderr: Some(true),
                     cmd: Some(vec![
                         "cat",
-                        &format!(
-                            "/tmp/docker-mailserver/opendkim/keys/{}/mail.txt",
-                            ip_address
-                        ),
+                        &format!("/tmp/docker-mailserver/opendkim/keys/{}/mail.txt", domain),
                     ]),
                     ..Default::default()
                 },
@@ -100,10 +102,13 @@ impl Mailserver {
             anyhow::bail!("Failed to fetch DKIM entry");
         }
 
+        // Restart container to active DKIM signatures. See https://docker-mailserver.github.io/docker-mailserver/edge/config/best-practices/dkim/#enabling-dkim-signature.
+        docker.restart_container(&id, None).await?;
+
         Ok(dkim_entry)
     }
 
-    pub async fn new() -> anyhow::Result<Self> {
+    pub async fn new(domain: &str) -> anyhow::Result<Self> {
         let docker = Docker::connect_with_local_defaults()?;
 
         docker
@@ -120,16 +125,15 @@ impl Mailserver {
 
         let empty = HashMap::<(), ()>::new();
         let mut exposed_ports = HashMap::new();
-        exposed_ports.insert("143/tcp", empty.clone());
-        exposed_ports.insert("993/tcp", empty);
+        exposed_ports.insert("25/tcp", empty.clone()); // SMTP
+        exposed_ports.insert("143/tcp", empty); // IMAP4
 
         let mailserver_config = Config {
             image: Some(IMAGE),
             tty: Some(true),
             attach_stdout: Some(true),
             attach_stderr: Some(true),
-            hostname: Some("mail"),
-            domainname: Some("near.org"),
+            domainname: Some(domain),
             exposed_ports: Some(exposed_ports),
             ..Default::default()
         };
@@ -140,8 +144,6 @@ impl Mailserver {
             .id;
         docker.start_container::<String>(&id, None).await?;
 
-        Self::continuously_print_docker_output(&docker, &id).await?;
-
         let ip_address = docker
             .inspect_container(&id, None)
             .await?
@@ -150,47 +152,96 @@ impl Mailserver {
             .ip_address
             .unwrap();
 
-        let dkim_entry = Self::generate_dkim(&docker, &id, &ip_address).await?;
-        let dkim_entry = crate::dkim_entry::parse(&dkim_entry)?;
+        // Mailserver requires at least one email to be set up in order to start working
+        Self::create_email_address(&docker, &id, &domain, "admin", "12345").await?;
+
+        let dkim_entry = Self::generate_dkim(&docker, &id, &domain).await?;
+        let mut dkim_entry = crate::dkim_entry::parse(&dkim_entry)?;
+        dkim_entry.key = "mail._domainkey.email.near.org".to_string();
+
+        Self::continuously_print_docker_output(&docker, &id).await?;
 
         let server = Self {
             docker,
+            domain: domain.to_string(),
             ip_address,
             id,
             dkim_entry,
         };
 
-        // Mailserver requires at least one email to be set up in order to start working
-        server.create_email("admin", "12345").await?;
-
         Ok(server)
     }
 
-    pub async fn create_email(&self, username: &str, password: &str) -> anyhow::Result<String> {
-        let email = format!("{}@{}", username, self.ip_address);
-        let exec = self
-            .docker
+    async fn create_email_address(
+        docker: &Docker,
+        id: &str,
+        domain: &str,
+        username: &str,
+        password: &str,
+    ) -> anyhow::Result<(Address, Credentials)> {
+        let address = Address::new(username, domain)
+            .map_err(|e| anyhow::anyhow!("Could not construct a valid address: {}", e))?;
+        let creds = Credentials::new(address.to_string(), password.to_string());
+        let exec = docker
             .create_exec(
-                &self.id,
+                id,
                 CreateExecOptions {
                     attach_stdout: Some(true),
                     attach_stderr: Some(true),
-                    cmd: Some(vec!["setup", "email", "add", &email, password]),
+                    cmd: Some(vec![
+                        "setup",
+                        "email",
+                        "add",
+                        &address.to_string(),
+                        password,
+                    ]),
                     ..Default::default()
                 },
             )
             .await?
             .id;
         if let StartExecResults::Attached { mut output, .. } =
-            self.docker.start_exec(&exec, None).await?
+            docker.start_exec(&exec, None).await?
         {
             while let Some(Ok(msg)) = output.next().await {
                 print!("{}", msg);
             }
         } else {
-            anyhow::bail!("Failed to create {}", email);
+            anyhow::bail!("Failed to create {}", &address);
         }
 
-        Ok(email)
+        Ok((address, creds))
+    }
+
+    pub async fn create_email(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> anyhow::Result<(Address, Credentials)> {
+        Self::create_email_address(&self.docker, &self.id, &self.domain, username, password).await
+    }
+
+    pub fn init(
+        &self,
+        from: &Address,
+        to: &Address,
+        from_creds: &Credentials,
+    ) -> anyhow::Result<()> {
+        let email = Message::builder()
+            .from(Mailbox::new(None, from.clone()))
+            .to(Mailbox::new(None, to.clone()))
+            .subject("init")
+            .header(ContentType::TEXT_PLAIN)
+            .body("".to_string())?;
+
+        // Open a remote connection to gmail
+        let mailer = SmtpTransport::builder_dangerous(&self.ip_address)
+            .credentials(from_creds.clone())
+            .build();
+
+        // Send the email
+        mailer.send(&email)?;
+
+        Ok(())
     }
 }
